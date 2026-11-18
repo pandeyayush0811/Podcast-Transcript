@@ -1,0 +1,32 @@
+# Environment & Secrets (NEVER COMMIT TO GITHUB)
+.env
+.streamlit/secrets.toml
+secrets.toml
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Download & Temp Directories
+downloads/
+temp_downloads/
+temp_uploads/
+
+# Audio/Video cache
+*.mp3
+*.m4a
+*.wav
+*.mp4
+*.webm
+*.ogg
+
+# Generated transcripts
+transcript_*.md
+diarized_podcast_transcript.md
+
+# Virtual Environments
+venv/
+env/
+.venv/

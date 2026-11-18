@@ -7,16 +7,70 @@ from datetime import timedelta
 from typing import Optional, Dict, Any, List, Tuple
 
 # ==========================================
-# CONFIGURATION
+# SECURE CONFIGURATION (NO HARDCODED SECRETS)
 # ==========================================
-ASSEMBLYAI_API_KEY = "265abe2425ad4b33b711487abc7da9fc"
-aai.settings.api_key = ASSEMBLYAI_API_KEY
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 st.set_page_config(
     page_title="AI Podcast Transcriber & Character Diarization",
     page_icon="🎙️",
     layout="wide"
 )
+
+# Fetch API key securely from:
+# 1. Streamlit Cloud Secrets (st.secrets)
+# 2. Local Environment Variables (.env)
+api_key = None
+if hasattr(st, "secrets") and "ASSEMBLYAI_API_KEY" in st.secrets:
+    api_key = st.secrets["ASSEMBLYAI_API_KEY"]
+if not api_key:
+    api_key = os.getenv("ASSEMBLYAI_API_KEY")
+
+# --- SIDEBAR CONFIGURATION ---
+with st.sidebar:
+    st.header("⚙️ Configuration")
+    
+    # Secure API Key Management
+    st.subheader("🔑 API Key Security")
+    if api_key:
+        st.success("✅ AssemblyAI API Key Securely Loaded (Vault)")
+        active_api_key = api_key
+    else:
+        user_key = st.text_input("AssemblyAI API Key Enter Karein:", type="password", help="Aapki key secure rahegi.")
+        active_api_key = user_key
+
+    st.markdown("---")
+    st.subheader("👥 Speakers / Characters Ke Naam")
+    custom_names_input = st.text_input(
+        "Speakers ke Naam (Comma-separated):",
+        placeholder="e.g. Raj Shamani, Sachin Puri",
+        help="Aap pehle se naam de sakte hain. First name Speaker A ko milega, second Speaker B ko."
+    )
+    
+    predefined_names = [n.strip() for n in custom_names_input.split(",") if n.strip()] if custom_names_input else []
+
+    if predefined_names:
+        st.success(f"Configured: {', '.join(predefined_names)}")
+    else:
+        speakers_known = st.checkbox("Mujhe sirf speaker count pata hai", value=False)
+        expected_spk = None
+        if speakers_known:
+            expected_spk = st.number_input("Expected Speakers Count", min_value=1, max_value=20, value=2)
+
+    st.subheader("🌐 Language")
+    lang_mode = st.radio("Language Setting:", ["Auto-Detect (Recommended)", "English", "Hindi"], index=0)
+    lang_code = None
+    if lang_mode == "English":
+        lang_code = "en"
+    elif lang_mode == "Hindi":
+        lang_code = "hi"
+
+    st.markdown("---")
+    st.info("💡 **Diarization Active:** Har character ka audio alag analyze hota hai. Temporary files automatically delete ho jati hain.")
 
 def format_timestamp(milliseconds: int) -> str:
     seconds = max(0, milliseconds // 1000)
@@ -45,27 +99,52 @@ def get_audio_source(url: str) -> Tuple[str, Optional[str]]:
         os.makedirs(output_dir, exist_ok=True)
         out_template = os.path.join(output_dir, "%(id)s.%(ext)s")
 
-        # Fast direct audio stream download without heavy ffmpeg re-encode
-        dl_opts = {
-            'format': 'ba[ext=m4a]/ba[ext=mp3]/ba',
-            'outtmpl': out_template,
-            'quiet': True,
-            'no_warnings': True,
-        }
-        with yt_dlp.YoutubeDL(dl_opts) as ydl:
-            info = ydl.extract_info(clean_url, download=True)
-            video_id = info.get('id', 'audio')
-            
-            downloaded_file = None
-            for f in os.listdir(output_dir):
-                if f.startswith(video_id):
-                    downloaded_file = os.path.join(output_dir, f)
-                    break
+        # Multi-client fallback strategy specifically to bypass datacenter 403 blocks
+        clients_to_try = [
+            ['ios', 'android'],
+            ['mweb'],
+            ['tv_embedded'],
+            ['web']
+        ]
 
-            if not downloaded_file or not os.path.exists(downloaded_file):
-                raise RuntimeError("Audio file download complete nahi ho payi.")
+        last_error = None
+        for client_group in clients_to_try:
+            try:
+                dl_opts = {
+                    'format': 'ba[ext=m4a]/ba[ext=mp3]/ba',
+                    'outtmpl': out_template,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'socket_timeout': 30,
+                    'retries': 5,
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': client_group,
+                            'player_skip': ['webpage', 'configs'],
+                        }
+                    },
+                    'http_headers': {
+                        'User-Agent': 'com.google.android.youtube/19.29.37 (Linux; U; Android 14; en_US) gzip',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                    }
+                }
+                with yt_dlp.YoutubeDL(dl_opts) as ydl:
+                    info = ydl.extract_info(clean_url, download=True)
+                    video_id = info.get('id', 'audio')
+                    
+                    downloaded_file = None
+                    for f in os.listdir(output_dir):
+                        if f.startswith(video_id):
+                            downloaded_file = os.path.join(output_dir, f)
+                            break
 
-            return downloaded_file, downloaded_file
+                    if downloaded_file and os.path.exists(downloaded_file):
+                        return downloaded_file, downloaded_file
+            except Exception as e:
+                last_error = e
+                continue
+
+        raise RuntimeError(f"YouTube audio extract nahi ho paya (All client bypasses failed): {str(last_error)}")
 
     elif is_valid_url(clean_url):
         return clean_url, None
@@ -76,39 +155,7 @@ def get_audio_source(url: str) -> Tuple[str, Optional[str]]:
 
 # --- HEADER ---
 st.title("🎙️ AI Podcast Transcriber & Character Diarization")
-st.caption("⚡ Powered by AssemblyAI Universal GPU Engine | Accurate Speaker Separation & Timestamps")
-
-# --- SIDEBAR CONFIGURATION ---
-with st.sidebar:
-    st.header("⚙️ Configuration")
-    
-    st.subheader("👥 Speakers / Characters Ke Naam")
-    custom_names_input = st.text_input(
-        "Speakers ke Naam (Comma-separated):",
-        placeholder="e.g. Raj Shamani, Sachin Puri",
-        help="Aap pehle se naam de sakte hain. First name Speaker A ko milega, second Speaker B ko."
-    )
-    
-    predefined_names = [n.strip() for n in custom_names_input.split(",") if n.strip()] if custom_names_input else []
-
-    if predefined_names:
-        st.success(f"Configured: {', '.join(predefined_names)}")
-    else:
-        speakers_known = st.checkbox("Mujhe sirf speaker count pata hai", value=False)
-        expected_spk = None
-        if speakers_known:
-            expected_spk = st.number_input("Expected Speakers Count", min_value=1, max_value=20, value=2)
-
-    st.subheader("🌐 Language")
-    lang_mode = st.radio("Language Setting:", ["Auto-Detect (Recommended)", "English", "Hindi"], index=0)
-    lang_code = None
-    if lang_mode == "English":
-        lang_code = "en"
-    elif lang_mode == "Hindi":
-        lang_code = "hi"
-
-    st.markdown("---")
-    st.info("💡 **Diarization Active:** Har character ka audio alag analyze hota hai. Temporary files automatically delete ho jati hain.")
+st.caption("⚡ Powered by AssemblyAI Universal GPU Engine | Multi-Client 403 Bypass Enabled")
 
 # --- MAIN INPUT SECTION ---
 tab1, tab2 = st.tabs(["🔗 Audio / YouTube Link", "📁 Local Audio File Upload"])
@@ -147,15 +194,18 @@ if "speaker_names" not in st.session_state:
 
 # --- RUN BUTTON ---
 if st.button("🚀 Transcribe & Diarize Podcast", type="primary", use_container_width=True):
-    if not source_target:
+    if not active_api_key:
+        st.error("❌ AssemblyAI API Key missing hai. Kripya sidebar me apni API Key enter karein.")
+    elif not source_target:
         st.warning("⚠️ Kripya pehle koi link dalein ya audio file upload karein!")
     else:
+        aai.settings.api_key = active_api_key
         temp_cleanup = None
         prog_bar = st.progress(0, text="Audio check ho raha hai...")
 
         try:
             if is_youtube_url(source_target):
-                prog_bar.progress(15, text="📥 YouTube audio stream cache ho raha hai (Fast Mode)...")
+                prog_bar.progress(15, text="📥 YouTube audio stream cache ho raha hai (iOS/Android Bypass Active)...")
             
             audio_source_path, temp_cleanup = get_audio_source(source_target)
 

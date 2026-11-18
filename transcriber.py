@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, List, Tuple
 import assemblyai as aai
 
 # ==========================================
-# SECURE CONFIGURATION (NO HARDCODED KEYS)
+# SECURE CONFIGURATION (NO HARDCODED SECRETS)
 # ==========================================
 try:
     from dotenv import load_dotenv
@@ -16,7 +16,6 @@ except ImportError:
     pass
 
 def get_api_key() -> str:
-    """API key ko environment, .env ya .streamlit/secrets.toml se securely fetch karta hai."""
     key = os.getenv("ASSEMBLYAI_API_KEY")
     if not key and os.path.exists(".streamlit/secrets.toml"):
         try:
@@ -42,7 +41,6 @@ if not API_KEY:
 aai.settings.api_key = API_KEY
 
 def format_timestamp(milliseconds: int) -> str:
-    """Milliseconds ko [HH:MM:SS] format me convert karta hai."""
     seconds = max(0, milliseconds // 1000)
     td = timedelta(seconds=seconds)
     total_seconds = int(td.total_seconds())
@@ -54,22 +52,13 @@ def format_timestamp(milliseconds: int) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 def is_youtube_url(url: str) -> bool:
-    """Check karta hai ki input YouTube ka link hai ya nahi."""
     youtube_regex = r'(https?://)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)/'
     return bool(re.search(youtube_regex, url))
 
 def is_valid_url(url: str) -> bool:
-    """Check karta hai ki input web URL hai ya local file path."""
     return url.startswith("http://") or url.startswith("https://")
 
 def get_audio_source(url: str) -> Tuple[str, Optional[str]]:
-    """
-    Intelligent Audio Routing:
-    - YouTube: Fast direct audio stream download without heavy ffmpeg re-encode.
-    - Public Web URLs: Zero-Download Direct Cloud Transfer.
-    - Local Files: Direct local file upload.
-    Returns: (audio_target, temp_cleanup_path_if_any)
-    """
     clean_url = url.strip().strip('"').strip("'")
 
     if is_youtube_url(clean_url):
@@ -78,34 +67,58 @@ def get_audio_source(url: str) -> Tuple[str, Optional[str]]:
         os.makedirs(output_dir, exist_ok=True)
         out_template = os.path.join(output_dir, "%(id)s.%(ext)s")
 
-        dl_opts = {
-            'format': 'ba[ext=m4a]/ba[ext=mp3]/ba',
-            'outtmpl': out_template,
-            'quiet': False,
-            'no_warnings': True,
-        }
-        print(f"\n[📥] YouTube audio stream download ho raha hai (Fast Mode)...")
-        with yt_dlp.YoutubeDL(dl_opts) as ydl:
-            info = ydl.extract_info(clean_url, download=True)
-            video_id = info.get('id', 'audio')
-            title = info.get('title', 'YouTube Podcast')
-            
-            downloaded_file = None
-            for f in os.listdir(output_dir):
-                if f.startswith(video_id):
-                    downloaded_file = os.path.join(output_dir, f)
-                    break
+        clients_to_try = [
+            ['ios', 'android'],
+            ['mweb'],
+            ['tv_embedded'],
+            ['web']
+        ]
 
-            if not downloaded_file or not os.path.exists(downloaded_file):
-                raise RuntimeError("Audio file download complete nahi ho payi.")
+        last_error = None
+        for client_group in clients_to_try:
+            try:
+                dl_opts = {
+                    'format': 'ba[ext=m4a]/ba[ext=mp3]/ba',
+                    'outtmpl': out_template,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'socket_timeout': 30,
+                    'retries': 5,
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': client_group,
+                            'player_skip': ['webpage', 'configs'],
+                        }
+                    },
+                    'http_headers': {
+                        'User-Agent': 'com.google.android.youtube/19.29.37 (Linux; U; Android 14; en_US) gzip',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                    }
+                }
+                print(f"[📥] YouTube audio stream extract kiya ja raha hai (Clients: {client_group})...")
+                with yt_dlp.YoutubeDL(dl_opts) as ydl:
+                    info = ydl.extract_info(clean_url, download=True)
+                    video_id = info.get('id', 'audio')
+                    title = info.get('title', 'YouTube Podcast')
+                    
+                    downloaded_file = None
+                    for f in os.listdir(output_dir):
+                        if f.startswith(video_id):
+                            downloaded_file = os.path.join(output_dir, f)
+                            break
 
-            file_size_mb = round(os.path.getsize(downloaded_file) / (1024 * 1024), 2)
-            print(f"[✅] Download complete: '{title}' ({file_size_mb} MB)")
-            return downloaded_file, downloaded_file
+                    if downloaded_file and os.path.exists(downloaded_file):
+                        file_size_mb = round(os.path.getsize(downloaded_file) / (1024 * 1024), 2)
+                        print(f"[✅] Download complete: '{title}' ({file_size_mb} MB)")
+                        return downloaded_file, downloaded_file
+            except Exception as e:
+                last_error = e
+                continue
+
+        raise RuntimeError(f"YouTube download failed: {str(last_error)}")
 
     elif is_valid_url(clean_url):
         print(f"\n[🌐] Direct Public Web URL detect hua: '{clean_url}'")
-        print("[⚡] Zero-Download Mode: Direct Cloud-to-Cloud transfer active!")
         return clean_url, None
 
     else:
@@ -121,22 +134,17 @@ def transcribe_with_diarization(
     language_code: Optional[str] = None,
     cleanup_temp: bool = True
 ) -> Optional[Dict[str, Any]]:
-    """
-    Robust Diarization Engine with AssemblyAI.
-    """
     source_clean = source.strip().strip('"').strip("'")
     if not source_clean:
         print("[❌] Error: Input source empty hai.")
         return None
 
-    # Step 1: Resolve Audio Target
     try:
         audio_target, temp_cleanup = get_audio_source(source_clean)
     except Exception as e:
         print(f"[❌] Source Resolution Error: {e}")
         return None
 
-    # Step 2: Speaker Configuration
     if speaker_names and len(speaker_names) > 0 and not num_speakers:
         num_speakers = len(speaker_names)
 
@@ -160,7 +168,6 @@ def transcribe_with_diarization(
     config = aai.TranscriptionConfig(**config_args)
     transcriber = aai.Transcriber()
 
-    # Step 3: Cloud GPU Submission
     print("\n" + "="*65)
     print("🚀 [Cloud GPU Engine] Job Submit ho raha hai...")
     if speaker_names:
@@ -175,7 +182,6 @@ def transcribe_with_diarization(
         print(f"[❌] API Submission Failed: {e}")
         return None
 
-    # Step 4: Non-blocking Polling
     start_time = time.time()
     spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     idx = 0
@@ -208,7 +214,6 @@ def transcribe_with_diarization(
         print("[⚠️] Warning: Koi speech detect nahi hui.")
         return None
 
-    # Step 5: Map Custom Names
     distinct_speakers = sorted(list(set(u.speaker for u in utterances)))
     speaker_map = {}
     for i, spk_label in enumerate(distinct_speakers):
@@ -241,14 +246,11 @@ def transcribe_with_diarization(
 
         time_range = f"{format_timestamp(u.start)} - {format_timestamp(u.end)}"
         
-        # Terminal display
         print(f"\033[1;36m[{time_range}] {display_name}:\033[0m")
         print(f"   {u.text}\n")
 
-        # Markdown file output
         lines.append(f"**{display_name}** `[{time_range}]`:\n> {u.text}\n")
 
-    # Speaker Analytics Summary
     lines.append("\n---\n### 📊 Speaker Statistics\n")
     print("-"*65)
     print("📊 SPEAKER BREAKDOWN SUMMARY:")
@@ -260,14 +262,12 @@ def transcribe_with_diarization(
         print(f" • {spk_name:18}: {dur_str} bolne ka samay | {data['words']:4} words | {data['turns']:2} turns")
     print("="*65)
 
-    # Save to Markdown File
     output_filename = f"transcript_{int(time.time())}.md"
     with open(output_filename, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
     print(f"\n[💾] Complete Transcript successfully saved to: {os.path.abspath(output_filename)}")
 
-    # Auto disk cleanup
     if cleanup_temp and temp_cleanup and os.path.exists(temp_cleanup):
         try:
             os.remove(temp_cleanup)

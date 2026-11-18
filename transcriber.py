@@ -61,12 +61,6 @@ def is_valid_url(url: str) -> bool:
     return url.startswith("http://") or url.startswith("https://")
 
 def compress_for_speech_ai(input_file: str, output_dir: str = "temp_downloads") -> Tuple[str, bool]:
-    """
-    Ultra Speech Compression:
-    Audio ko 16kHz Mono 24kbps me convert karta hai.
-    3 ghante ka 180MB audio sirf ~22MB me shrink ho jata hai!
-    Returns: (compressed_filepath, is_new_file)
-    """
     os.makedirs(output_dir, exist_ok=True)
     base_name = os.path.splitext(os.path.basename(input_file))[0]
     compressed_file = os.path.join(output_dir, f"{base_name}_opt24k.mp3")
@@ -77,10 +71,10 @@ def compress_for_speech_ai(input_file: str, output_dir: str = "temp_downloads") 
     cmd = [
         "ffmpeg", "-y",
         "-i", input_file,
-        "-vn",                  # Video stream discard
-        "-ac", "1",             # Single channel (Mono) - saves 50% size
-        "-ar", "16000",         # 16kHz sample rate (Speech AI standard)
-        "-b:a", "24k",          # 24 kbps speech bitrate
+        "-vn",
+        "-ac", "1",
+        "-ar", "16000",
+        "-b:a", "24k",
         compressed_file
     ]
 
@@ -94,18 +88,11 @@ def compress_for_speech_ai(input_file: str, output_dir: str = "temp_downloads") 
             print(f"[🚀] Compression Done in {dur}s! New Size: {new_size_mb} MB ({ratio}% data saved!)")
             return compressed_file, True
     except Exception as e:
-        print(f"[⚠️] FFmpeg compression note: {e}. Original file use ki jayegi.")
+        print(f"[⚠️] FFmpeg note: {e}. Original file use ki jayegi.")
 
     return input_file, False
 
 def get_audio_source(url: str) -> Tuple[str, List[str]]:
-    """
-    Intelligent Audio Routing + Auto Speech Compression:
-    - YouTube: Direct stream download -> Ultra 24k Mono Compress
-    - Local Files: Auto-detects size, if > 25MB compresses for 10x faster upload
-    - Web URLs: Direct Cloud-to-Cloud
-    Returns: (final_audio_path, list_of_temp_files_to_cleanup)
-    """
     clean_url = url.strip().strip('"').strip("'")
     temp_files = []
 
@@ -115,18 +102,28 @@ def get_audio_source(url: str) -> Tuple[str, List[str]]:
         os.makedirs(output_dir, exist_ok=True)
         out_template = os.path.join(output_dir, "%(id)s.%(ext)s")
 
-        # Pull lightweight speech stream
+        # Crucial Fix: Force YouTube ORIGINAL audio track (prevents auto-downloading Arabic/Russian dubbed tracks)
+        format_selector = (
+            'ba[format_note*=original][abr<=64]/'
+            'ba[format_id*=original][abr<=64]/'
+            'ba[format_note*=original]/'
+            'ba[format_id*=original]/'
+            'bestaudio[language=original]/'
+            'bestaudio'
+        )
+
         dl_opts = {
-            'format': 'ba[abr<=48]/ba[ext=m4a]/ba',
+            'format': format_selector,
             'outtmpl': out_template,
             'quiet': True,
             'no_warnings': True,
         }
-        print(f"\n[📥] YouTube audio stream extract ho raha hai...")
+        print(f"\n[📥] YouTube se Original (English/Hindi) audio track extract ho raha hai...")
         with yt_dlp.YoutubeDL(dl_opts) as ydl:
             info = ydl.extract_info(clean_url, download=True)
             video_id = info.get('id', 'audio')
             title = info.get('title', 'YouTube Podcast')
+            lang = info.get('language', 'original')
             
             raw_file = None
             for f in os.listdir(output_dir):
@@ -138,9 +135,8 @@ def get_audio_source(url: str) -> Tuple[str, List[str]]:
                 raise RuntimeError("Audio download complete nahi ho payi.")
 
             temp_files.append(raw_file)
-            print(f"[✅] YouTube Audio Fetched: '{title}'")
+            print(f"[✅] YouTube Audio Fetched: '{title}' (Language Track: {lang})")
 
-            # Compress to 24kbps mono for 10x faster upload
             compressed_file, is_new = compress_for_speech_ai(raw_file, output_dir)
             if is_new:
                 temp_files.append(compressed_file)
@@ -157,7 +153,6 @@ def get_audio_source(url: str) -> Tuple[str, List[str]]:
         file_size_mb = os.path.getsize(clean_url) / (1024 * 1024)
         print(f"\n[📁] Local file detect hui: {os.path.basename(clean_url)} ({round(file_size_mb, 1)} MB)")
 
-        # Agar local file 25MB se badi hai toh upload fast karne ke liye auto-compress karo
         if file_size_mb > 25:
             compressed_file, is_new = compress_for_speech_ai(clean_url)
             if is_new:

@@ -71,7 +71,7 @@ with st.sidebar:
         lang_code = "hi"
 
     st.markdown("---")
-    st.info("⚡ **Ultra-Compression Active:** 3 ghante ki audio 180MB se shrink hokar sirf ~22MB ho jati hai, taaki upload 15 seconds me ho jaye!")
+    st.info("⚡ **Original Audio Track Lock:** Automatically targets original English/Hindi speech instead of foreign auto-dubs.")
 
 def format_timestamp(milliseconds: int) -> str:
     seconds = max(0, milliseconds // 1000)
@@ -92,11 +92,6 @@ def is_valid_url(url: str) -> bool:
     return url.startswith("http://") or url.startswith("https://")
 
 def compress_for_speech_ai(input_file: str, output_dir: str = "temp_downloads") -> Tuple[str, bool]:
-    """
-    Ultra Speech Compression:
-    Audio ko 16kHz Mono 24kbps me convert karta hai.
-    3 ghante ka 180MB audio sirf ~22MB me shrink ho jata hai!
-    """
     os.makedirs(output_dir, exist_ok=True)
     base_name = os.path.splitext(os.path.basename(input_file))[0]
     compressed_file = os.path.join(output_dir, f"{base_name}_opt24k.mp3")
@@ -130,8 +125,18 @@ def get_audio_source(url: str) -> Tuple[str, List[str]]:
         os.makedirs(output_dir, exist_ok=True)
         out_template = os.path.join(output_dir, "%(id)s.%(ext)s")
 
+        # Crucial Fix: Force YouTube ORIGINAL audio track (prevents auto-downloading Arabic/Russian dubbed tracks)
+        format_selector = (
+            'ba[format_note*=original][abr<=64]/'
+            'ba[format_id*=original][abr<=64]/'
+            'ba[format_note*=original]/'
+            'ba[format_id*=original]/'
+            'bestaudio[language=original]/'
+            'bestaudio'
+        )
+
         dl_opts = {
-            'format': 'ba[abr<=48]/ba[ext=m4a]/ba',
+            'format': format_selector,
             'outtmpl': out_template,
             'quiet': True,
             'no_warnings': True,
@@ -172,7 +177,7 @@ def get_audio_source(url: str) -> Tuple[str, List[str]]:
 
 # --- HEADER ---
 st.title("🎙️ AI Podcast Transcriber & Character Diarization")
-st.caption("⚡ Powered by AssemblyAI Universal GPU Engine | Ultra-Compressed Fast Upload Mode")
+st.caption("⚡ Powered by AssemblyAI Universal GPU Engine | Original Audio Track Locked")
 
 # --- MAIN INPUT SECTION ---
 tab1, tab2 = st.tabs(["🔗 Audio / YouTube Link", "📁 Local Audio File Upload"])
@@ -222,7 +227,7 @@ if st.button("🚀 Transcribe & Diarize Podcast", type="primary", use_container_
 
         try:
             if is_youtube_url(source_target):
-                prog_bar.progress(15, text="📥 YouTube se lightweight audio extract ho raha hai...")
+                prog_bar.progress(15, text="📥 YouTube se Original (English/Hindi) audio extract ho raha hai...")
             
             audio_source_path, temp_cleanups = get_audio_source(source_target)
 

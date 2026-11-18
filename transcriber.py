@@ -7,6 +7,9 @@ from datetime import timedelta
 from typing import Optional, Dict, Any, List, Tuple
 import assemblyai as aai
 
+# Import PDF Generator
+from pdf_generator import generate_podcast_pdf
+
 # ==========================================
 # SECURE CONFIGURATION (NO HARDCODED SECRETS)
 # ==========================================
@@ -331,11 +334,26 @@ def transcribe_with_diarization(
         print(f" • {spk_name:18}: {dur_str} bolne ka samay | {data['words']:4} words | {data['turns']:2} turns")
     print("="*65)
 
+    # Save to Markdown File
     output_filename = f"transcript_{int(time.time())}.md"
     with open(output_filename, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
+    print(f"\n[💾] Markdown Transcript saved to: {os.path.abspath(output_filename)}")
 
-    print(f"\n[💾] Complete Transcript successfully saved to: {os.path.abspath(output_filename)}")
+    # Generate Professional Dual-Sided Dialogue PDF
+    output_pdf = f"transcript_{int(time.time())}.pdf"
+    try:
+        generate_podcast_pdf(
+            source_name=source_clean,
+            utterances=[{"speaker": u.speaker, "start": u.start, "end": u.end, "text": u.text} for u in utterances],
+            speakers=distinct_speakers,
+            speaker_names=speaker_map,
+            output_pdf_path=output_pdf,
+            detected_lang=transcript.json_response.get('language_code', 'auto')
+        )
+        print(f"[📄] Dual-Sided Dialogue PDF saved to: {os.path.abspath(output_pdf)}")
+    except Exception as pdf_err:
+        print(f"[⚠️] PDF Generation Note: {pdf_err}")
 
     if cleanup_temp and temp_cleanups:
         for tf in temp_cleanups:

@@ -7,6 +7,9 @@ import subprocess
 from datetime import timedelta
 from typing import Optional, Dict, Any, List, Tuple
 
+# PDF Generator Module
+from pdf_generator import generate_podcast_pdf
+
 # ==========================================
 # SECURE CONFIGURATION (NO HARDCODED SECRETS)
 # ==========================================
@@ -33,6 +36,7 @@ if not api_key:
 with st.sidebar:
     st.header("⚙️ Configuration")
     
+    # Secure API Key Management
     st.subheader("🔑 API Key Security")
     if api_key:
         st.success("✅ AssemblyAI API Key Securely Loaded (Vault)")
@@ -68,7 +72,7 @@ with st.sidebar:
         lang_code = "hi"
 
     st.markdown("---")
-    st.info("🎯 **True Original Track Locked:** Yeh kisi bhi Hindi/Arabic auto-dub ko ignore karke sirf Creator ki Original Audio ka Mono version process karega.")
+    st.info("📄 **Dual-Sided PDF Ready:** Final download me left vs right chat-bubble style ka professional PDF milega.")
 
 def format_timestamp(milliseconds: int) -> str:
     seconds = max(0, milliseconds // 1000)
@@ -150,9 +154,6 @@ def get_audio_source(url: str) -> Tuple[str, List[str]]:
         with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl_probe:
             meta = ydl_probe.extract_info(clean_url, download=False)
             chosen_fid = select_true_original_format_id(meta.get('formats', []))
-            
-            chosen_fmt = next((f for f in meta.get('formats', []) if f.get('format_id') == chosen_fid), {})
-            lang_label = chosen_fmt.get('language') or chosen_fmt.get('format_note') or 'Original'
 
         out_template = os.path.join(output_dir, f"{meta.get('id', 'audio')}_orig.%(ext)s")
         dl_opts = {
@@ -195,8 +196,8 @@ def get_audio_source(url: str) -> Tuple[str, List[str]]:
         return clean_url, []
 
 # --- HEADER ---
-st.title("🎙️ AI Podcast Transcriber & Character Diarization")
-st.caption("⚡ Powered by AssemblyAI Universal GPU Engine | True Original Audio Track Locked")
+st.title("🎙️ AI Podcast Transcriber & Dialogue Studio")
+st.caption("⚡ Powered by AssemblyAI Universal GPU Engine | Dual-Sided Conversational PDF Export")
 
 # --- MAIN INPUT SECTION ---
 tab1, tab2 = st.tabs(["🔗 Audio / YouTube Link", "📁 Local Audio File Upload"])
@@ -296,7 +297,6 @@ if st.button("🚀 Transcribe & Diarize Podcast", type="primary", use_container_
                         sim_progress += 4
                     prog_bar.progress(sim_progress, text=f"⏳ Diarizing speakers in progress... ({int(time.time() - start_time)}s elapsed)")
 
-            # Store in session state
             utterances_data = []
             distinct_speakers = set()
             for u in res.utterances:
@@ -309,14 +309,16 @@ if st.button("🚀 Transcribe & Diarize Podcast", type="primary", use_container_
                 })
 
             sorted_spks = sorted(list(distinct_speakers))
+            detected_lang = res.json_response.get('language_code', 'auto')
+
             st.session_state.transcript_data = {
                 "source": source_label,
                 "utterances": utterances_data,
                 "speakers": sorted_spks,
-                "duration_seconds": int(time.time() - start_time)
+                "duration_seconds": int(time.time() - start_time),
+                "language": detected_lang
             }
 
-            # Predefined names map karna
             new_speaker_map = {}
             for i, spk in enumerate(sorted_spks):
                 if i < len(predefined_names):
@@ -348,7 +350,7 @@ if st.session_state.transcript_data:
 
     # --- CHARACTER NAME MAPPER & SWAP BUTTON ---
     with st.expander("🏷️ Speakers ke Real Names Edit / Swap Karein", expanded=True):
-        st.write("Aap yahan se kisi bhi speaker ka naam change kar sakte hain ya do speakers ko aapas me **Swap** kar sakte hain:")
+        st.write("Aap yahan se kisi bhi speaker ka naam change kar sakte hain ya do speakers ko aapas me **Swap** kar sakte hain (PDF me yahi names aayenge):")
         col_list = st.columns(min(len(speakers), 4))
         for i, spk in enumerate(speakers):
             col = col_list[i % len(col_list)]
@@ -357,7 +359,6 @@ if st.session_state.transcript_data:
             if new_name.strip():
                 st.session_state.speaker_names[spk] = new_name.strip()
 
-        # Swap button agar kam se kam 2 speakers hon
         if len(speakers) >= 2:
             st.markdown("---")
             swap_cols = st.columns([2, 2, 2])
@@ -390,20 +391,65 @@ if st.session_state.transcript_data:
         with stats_cols[i]:
             st.metric(label=display_name, value=f"{len(spk_turns)} turns", delta=f"{time_str} speaking | {total_words} words")
 
+    # --- PDF & MARKDOWN DOWNLOAD SECTION ---
+    st.markdown("---")
+    st.subheader("📥 Export Transcript")
+
+    # Generate PDF in temp path
+    pdf_filename = f"podcast_dialogue_{int(time.time())}.pdf"
+    generate_podcast_pdf(
+        source_name=data["source"],
+        utterances=data["utterances"],
+        speakers=speakers,
+        speaker_names=st.session_state.speaker_names,
+        output_pdf_path=pdf_filename,
+        detected_lang=data.get("language", "auto")
+    )
+
+    with open(pdf_filename, "rb") as f:
+        pdf_bytes = f.read()
+
+    # Generate Markdown string
+    md_output_lines = [
+        f"# 🎙️ Podcast Transcript\n- **Source:** {data['source']}\n- **Total Speakers:** {len(speakers)}\n\n---\n"
+    ]
+    for u in data["utterances"]:
+        spk_id = u["speaker"]
+        spk_name = st.session_state.speaker_names.get(spk_id, f"Speaker {spk_id}")
+        time_str = f"{format_timestamp(u['start'])} - {format_timestamp(u['end'])}"
+        md_output_lines.append(f"**{spk_name}** `[{time_str}]`:\n> {u['text']}\n\n")
+    full_markdown = "\n".join(md_output_lines)
+
+    dcol1, dcol2 = st.columns(2)
+    with dcol1:
+        st.download_button(
+            label="📄 Download Dual-Sided Dialogue PDF (.pdf)",
+            data=pdf_bytes,
+            file_name="podcast_dialogue_transcript.pdf",
+            mime="application/pdf",
+            type="primary",
+            use_container_width=True
+        )
+    with dcol2:
+        st.download_button(
+            label="📝 Download Raw Markdown (.md)",
+            data=full_markdown,
+            file_name="podcast_transcript.md",
+            mime="text/markdown",
+            use_container_width=True
+        )
+
     # --- FILTER BY SPEAKER ---
     st.markdown("---")
     filter_option = st.selectbox(
-        "🔍 Filter Transcript by Speaker:",
+        "🔍 Filter Web Preview by Speaker:",
         ["Sabhi Characters (All Speakers)"] + [st.session_state.speaker_names[s] for s in speakers]
     )
 
     # --- CHAT-BUBBLE TRANSCRIPT VIEW ---
-    st.subheader("💬 Character-by-Character Transcript")
+    st.subheader("💬 Character-by-Character Web Preview")
     
     avatar_list = ["🧑‍🦱", "🧔", "👩", "👨‍🦳", "👱", "👧", "👨"]
-    md_output_lines = [
-        f"# 🎙️ Podcast Transcript\n- **Source:** {data['source']}\n- **Total Speakers:** {len(speakers)}\n\n---\n"
-    ]
 
     for u in data["utterances"]:
         spk_id = u["speaker"]
@@ -419,16 +465,3 @@ if st.session_state.transcript_data:
         with st.chat_message(spk_name, avatar=avatar):
             st.markdown(f"**{spk_name}** `[{time_str}]`")
             st.write(u["text"])
-
-        md_output_lines.append(f"**{spk_name}** `[{time_str}]`:\n> {u['text']}\n\n")
-
-    # --- DOWNLOAD BUTTON ---
-    st.markdown("---")
-    full_markdown = "\n".join(md_output_lines)
-    st.download_button(
-        label="📥 Download Full Diarized Transcript (.md)",
-        data=full_markdown,
-        file_name="diarized_podcast_transcript.md",
-        mime="text/markdown",
-        use_container_width=True
-    )

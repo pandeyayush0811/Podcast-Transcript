@@ -22,9 +22,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Fetch API key securely from:
-# 1. Streamlit Cloud Secrets (st.secrets)
-# 2. Local Environment Variables (.env)
+# Fetch API key securely
 api_key = None
 if hasattr(st, "secrets") and "ASSEMBLYAI_API_KEY" in st.secrets:
     api_key = st.secrets["ASSEMBLYAI_API_KEY"]
@@ -35,7 +33,6 @@ if not api_key:
 with st.sidebar:
     st.header("⚙️ Configuration")
     
-    # Secure API Key Management
     st.subheader("🔑 API Key Security")
     if api_key:
         st.success("✅ AssemblyAI API Key Securely Loaded (Vault)")
@@ -71,7 +68,7 @@ with st.sidebar:
         lang_code = "hi"
 
     st.markdown("---")
-    st.info("⚡ **Original Audio Track Lock:** Automatically targets original English/Hindi speech instead of foreign auto-dubs.")
+    st.info("🎯 **True Original Track Locked:** Yeh kisi bhi Hindi/Arabic auto-dub ko ignore karke sirf Creator ki Original Audio ka Mono version process karega.")
 
 def format_timestamp(milliseconds: int) -> str:
     seconds = max(0, milliseconds // 1000)
@@ -91,10 +88,36 @@ def is_youtube_url(url: str) -> bool:
 def is_valid_url(url: str) -> bool:
     return url.startswith("http://") or url.startswith("https://")
 
-def compress_for_speech_ai(input_file: str, output_dir: str = "temp_downloads") -> Tuple[str, bool]:
+def select_true_original_format_id(formats: List[Dict[str, Any]]) -> str:
+    audio_formats = [f for f in formats if f.get('vcodec') == 'none']
+    
+    original_candidates = []
+    for f in audio_formats:
+        note = str(f.get('format_note', '')).lower()
+        fid = str(f.get('format_id', '')).lower()
+        pref = f.get('language_preference')
+        
+        if 'dubbed' in note or 'dubbed' in fid:
+            continue
+            
+        if 'original' in note or 'original' in fid or pref == 10:
+            original_candidates.append(f)
+
+    if original_candidates:
+        original_candidates.sort(key=lambda x: x.get('tbr') or x.get('abr') or 999)
+        return original_candidates[0]['format_id']
+
+    non_dubbed = [f for f in audio_formats if 'dubbed' not in str(f.get('format_note', '')).lower()]
+    if non_dubbed:
+        non_dubbed.sort(key=lambda x: x.get('tbr') or x.get('abr') or 999)
+        return non_dubbed[0]['format_id']
+
+    return 'bestaudio'
+
+def convert_to_mono_speech(input_file: str, output_dir: str = "temp_downloads") -> Tuple[str, bool]:
     os.makedirs(output_dir, exist_ok=True)
     base_name = os.path.splitext(os.path.basename(input_file))[0]
-    compressed_file = os.path.join(output_dir, f"{base_name}_opt24k.mp3")
+    mono_output = os.path.join(output_dir, f"{base_name}_original_mono.mp3")
 
     cmd = [
         "ffmpeg", "-y",
@@ -103,13 +126,13 @@ def compress_for_speech_ai(input_file: str, output_dir: str = "temp_downloads") 
         "-ac", "1",
         "-ar", "16000",
         "-b:a", "24k",
-        compressed_file
+        mono_output
     ]
 
     try:
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-        if os.path.exists(compressed_file) and os.path.getsize(compressed_file) > 0:
-            return compressed_file, True
+        if os.path.exists(mono_output) and os.path.getsize(mono_output) > 0:
+            return mono_output, True
     except Exception:
         pass
 
@@ -123,42 +146,38 @@ def get_audio_source(url: str) -> Tuple[str, List[str]]:
         import yt_dlp
         output_dir = "temp_downloads"
         os.makedirs(output_dir, exist_ok=True)
-        out_template = os.path.join(output_dir, "%(id)s.%(ext)s")
 
-        # Crucial Fix: Force YouTube ORIGINAL audio track (prevents auto-downloading Arabic/Russian dubbed tracks)
-        format_selector = (
-            'ba[format_note*=original][abr<=64]/'
-            'ba[format_id*=original][abr<=64]/'
-            'ba[format_note*=original]/'
-            'ba[format_id*=original]/'
-            'bestaudio[language=original]/'
-            'bestaudio'
-        )
+        with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl_probe:
+            meta = ydl_probe.extract_info(clean_url, download=False)
+            chosen_fid = select_true_original_format_id(meta.get('formats', []))
+            
+            chosen_fmt = next((f for f in meta.get('formats', []) if f.get('format_id') == chosen_fid), {})
+            lang_label = chosen_fmt.get('language') or chosen_fmt.get('format_note') or 'Original'
 
+        out_template = os.path.join(output_dir, f"{meta.get('id', 'audio')}_orig.%(ext)s")
         dl_opts = {
-            'format': format_selector,
+            'format': chosen_fid,
             'outtmpl': out_template,
             'quiet': True,
             'no_warnings': True,
         }
-        with yt_dlp.YoutubeDL(dl_opts) as ydl:
-            info = ydl.extract_info(clean_url, download=True)
-            video_id = info.get('id', 'audio')
-            
-            raw_file = None
+        with yt_dlp.YoutubeDL(dl_opts) as ydl_down:
+            ydl_down.download([clean_url])
+
+            downloaded_raw = None
             for f in os.listdir(output_dir):
-                if f.startswith(video_id):
-                    raw_file = os.path.join(output_dir, f)
+                if f.startswith(f"{meta.get('id', 'audio')}_orig"):
+                    downloaded_raw = os.path.join(output_dir, f)
                     break
 
-            if not raw_file or not os.path.exists(raw_file):
-                raise RuntimeError("Audio download complete nahi ho payi.")
+            if not downloaded_raw or not os.path.exists(downloaded_raw):
+                raise RuntimeError("Original audio download complete nahi ho payi.")
 
-            temp_files.append(raw_file)
-            compressed_file, is_new = compress_for_speech_ai(raw_file, output_dir)
+            temp_files.append(downloaded_raw)
+            mono_file, is_new = convert_to_mono_speech(downloaded_raw, output_dir)
             if is_new:
-                temp_files.append(compressed_file)
-            return compressed_file, temp_files
+                temp_files.append(mono_file)
+            return mono_file, temp_files
 
     elif is_valid_url(clean_url):
         return clean_url, []
@@ -168,16 +187,16 @@ def get_audio_source(url: str) -> Tuple[str, List[str]]:
         
         file_size_mb = os.path.getsize(clean_url) / (1024 * 1024)
         if file_size_mb > 25:
-            compressed_file, is_new = compress_for_speech_ai(clean_url)
+            mono_file, is_new = convert_to_mono_speech(clean_url)
             if is_new:
-                temp_files.append(compressed_file)
-            return compressed_file, temp_files
+                temp_files.append(mono_file)
+            return mono_file, temp_files
 
         return clean_url, []
 
 # --- HEADER ---
 st.title("🎙️ AI Podcast Transcriber & Character Diarization")
-st.caption("⚡ Powered by AssemblyAI Universal GPU Engine | Original Audio Track Locked")
+st.caption("⚡ Powered by AssemblyAI Universal GPU Engine | True Original Audio Track Locked")
 
 # --- MAIN INPUT SECTION ---
 tab1, tab2 = st.tabs(["🔗 Audio / YouTube Link", "📁 Local Audio File Upload"])
@@ -227,12 +246,12 @@ if st.button("🚀 Transcribe & Diarize Podcast", type="primary", use_container_
 
         try:
             if is_youtube_url(source_target):
-                prog_bar.progress(15, text="📥 YouTube se Original (English/Hindi) audio extract ho raha hai...")
+                prog_bar.progress(15, text="🎯 YouTube se Creator ka TRUE ORIGINAL audio track uthaya ja raha hai...")
             
             audio_source_path, temp_cleanups = get_audio_source(source_target)
 
             file_size_mb = round(os.path.getsize(audio_source_path) / (1024 * 1024), 1) if os.path.exists(audio_source_path) else 0
-            prog_bar.progress(35, text=f"⚡ Audio compressed to {file_size_mb} MB! Cloud GPU par upload ho raha hai (Fast Mode)...")
+            prog_bar.progress(35, text=f"⚡ Original Audio Mono Convert hua ({file_size_mb} MB)! Upload ho raha hai...")
 
             config_args = {
                 "speaker_labels": True,
